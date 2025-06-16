@@ -1,39 +1,55 @@
-const express = require("express");
-const cors = require("cors");
-const fileUpload = require("express-fileupload");
-const path = require("path");
-const fs = require("fs");
+const WebSocket = require('ws');
 
-const app = express();
+const wss = new WebSocket.Server({ port: 8080 });
 
-app.use(cors());
-app.use(express.json());
-app.use(fileUpload());
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+const clients = new Map();
 
-app.post("/upload", (req, res) => {
-  if (!req.files || !req.files.file) {
-    return res.status(400).json({ error: "No file uploaded." });
+wss.on('connection', (ws) => {
+  const id = Math.random().toString(36).substr(2, 9);
+  clients.set(id, ws);
+  console.log(`Client connected: ${id}`);
+
+  // Send back the assigned id to the client
+  ws.send(JSON.stringify({ type: 'id', id }));
+
+  // Broadcast updated peer list to all clients
+  function broadcastPeers() {
+    const peerIds = [...clients.keys()];
+    const msg = JSON.stringify({ type: 'peers', peers: peerIds });
+    for (const client of clients.values()) {
+      client.send(msg);
+    }
   }
+  broadcastPeers();
 
-  const uploadedFile = req.files.file;
-  const uploadPath = path.join(__dirname, "uploads", uploadedFile.name);
-
-  uploadedFile.mv(uploadPath, (err) => {
-    if (err) {
-      return res.status(500).json({ error: "File upload failed." });
+  ws.on('message', (message) => {
+    // Message from client should be JSON
+    let data;
+    try {
+      data = JSON.parse(message);
+    } catch (e) {
+      console.error('Invalid JSON:', message);
+      return;
     }
 
-    const fileUrl = `/uploads/${uploadedFile.name}`;
-    res.json({ url: fileUrl });
+    if (data.type === 'signal') {
+      // Relay signaling data to the target peer
+      const targetWs = clients.get(data.target);
+      if (targetWs) {
+        targetWs.send(JSON.stringify({
+          type: 'signal',
+          from: id,
+          signal: data.signal
+        }));
+      }
+    }
+  });
+
+  ws.on('close', () => {
+    clients.delete(id);
+    console.log(`Client disconnected: ${id}`);
+    broadcastPeers();
   });
 });
 
-app.get("/", (req, res) => {
-  res.send("🚀 File Sharing Backend is Running");
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-});
+console.log('Signaling server running on ws://localhost:8080');
